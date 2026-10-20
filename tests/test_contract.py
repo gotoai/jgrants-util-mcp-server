@@ -4,7 +4,7 @@ import re
 
 from mcp import Client
 
-from jgrants_util_mcp_server.guideline import SECTIONS, TOPICS, guideline
+from jgrants_util_mcp_server.guideline import GUIDELINE, SECTIONS
 from jgrants_util_mcp_server.server import mcp
 
 TOOL_DESCRIPTION_TARGET = 1000
@@ -48,10 +48,6 @@ async def test_every_tool_description_is_short_and_tool_specific():
             assert "出典" not in description, f"{tool.name}: conditions of use belong in the guideline"
 
 
-def test_guideline_topics_match_its_sections():
-    assert set(TOPICS) == set(SECTIONS)
-
-
 async def test_tool_descriptions_have_no_docstring_layout():
     async with Client(mcp) as client:
         tools = (await client.list_tools()).tools
@@ -60,19 +56,16 @@ async def test_tool_descriptions_have_no_docstring_layout():
 
 
 def test_guideline_carries_the_conditions_of_use():
-    full = guideline()
-    assert "出典：Jグランツ（jGrants）" in full
-    for topic in TOPICS:
-        assert guideline(topic).strip()
-        assert guideline(topic) != full
+    assert "出典：Jグランツ（jGrants）" in GUIDELINE
 
 
-async def test_guideline_tool_returns_one_section_or_all():
+async def test_guideline_tool_takes_no_arguments_and_returns_the_whole_guideline():
     async with Client(mcp) as client:
-        whole = await client.call_tool("load_guideline", {})
-        terms = await client.call_tool("load_guideline", {"topic": "terms"})
-    assert not whole.is_error and not terms.is_error
-    whole_text = whole.content[0].text
-    terms_text = terms.content[0].text
-    assert "出典" in terms_text
-    assert len(terms_text) < len(whole_text)
+        tool = {tool.name: tool for tool in (await client.list_tools()).tools}["load_guideline"]
+        result = await client.call_tool("load_guideline", {})
+    assert not tool.input_schema.get("properties")
+    assert not result.is_error
+    text = result.content[0].text
+    assert text == GUIDELINE
+    for section in SECTIONS.values():
+        assert section in text

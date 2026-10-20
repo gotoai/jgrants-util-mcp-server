@@ -16,7 +16,7 @@ Jグランツの公開APIを使って、補助金の検索・詳細の確認・�
 
 | Tool | What it does |
 |---|---|
-| `load_guideline` | The usage guideline for the whole tool set: search strategy, details, attachments, what Jグランツ covers, and the conditions of use. Optional `topic` returns one section. |
+| `load_guideline` | The usage guideline for the whole tool set: search strategy, details, attachments, what Jグランツ covers, and the conditions of use. It takes no arguments and always returns the whole guideline. |
 | `search_subsidies` | Search by one keyword plus filters (area, industry, purpose, employee count); paged. |
 | `get_subsidy_detail` | One subsidy's overview, eligibility, rate, amounts, dates, portal URL and attachment list. |
 | `read_attachment` | The text of a PDF attachment, in pieces, with `next_offset` to continue. |

@@ -4,10 +4,6 @@ single tool, per Kari's skill-style MCP contract."""
 
 from __future__ import annotations
 
-from typing import Literal, get_args
-
-Topic = Literal["search", "detail", "attachments", "coverage", "terms"]
-
 SECTIONS: dict[str, str] = {
     "search": """\
 ## 検索の進め方（search_subsidies）
@@ -58,12 +54,7 @@ SECTIONS: dict[str, str] = {
 - 本サーバーはデジタル庁とは関係のない非公式のツールです。""",
 }
 
-TOPICS: tuple[str, ...] = get_args(Topic)
-
 HEADER = "# Jグランツ ツールの使い方\n"
 
-
-def guideline(topic: Topic | None = None) -> str:
-    if topic is None:
-        return HEADER + "\n\n".join(SECTIONS.values())
-    return HEADER + SECTIONS[topic]
+# Always served whole: an agent that read one section would miss the conditions of use.
+GUIDELINE = HEADER + "\n\n".join(SECTIONS.values())

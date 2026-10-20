@@ -34,7 +34,7 @@ from .api import (
     SortOrder,
     UsePurpose,
 )
-from .guideline import Topic, guideline
+from .guideline import GUIDELINE
 from .text import UnsupportedAttachment, attachment_text, html_to_text
 
 SERVER_NAME = "jgrants-util"
@@ -72,12 +72,8 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
     ),
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
-async def load_guideline(
-    topic: Annotated[
-        Topic | None, Field(description="One section only; omit for the whole guideline.")
-    ] = None,
-) -> str:
-    return guideline(topic)
+async def load_guideline() -> str:
+    return GUIDELINE
 
 
 @mcp.tool(
