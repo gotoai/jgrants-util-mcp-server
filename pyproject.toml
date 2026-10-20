@@ -1,0 +1,39 @@
+[project]
+name = "jgrants-util-mcp-server"
+version = "0.1.0"
+description = "A skill-style MCP server for the Jグランツ (jGrants) public subsidy API"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=2.3,<3",
+    "httpx>=0.27",
+    "pypdf>=5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+jgrants-util-mcp-server = "jgrants_util_mcp_server.server:main"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jgrants_util_mcp_server"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["live: calls the real Jグランツ API (set JGRANTS_LIVE=1 to run)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
