@@ -22,6 +22,13 @@ dev = [
 [project.scripts]
 jgrants-util-mcp-server = "jgrants_util_mcp_server.server:main"
 
+# What to run, declared so a client that installs this wheel does not have to be
+# told. Kari reads this group after installing a Python Package MCP server and
+# fills its command field from it; the module is runnable with `-m`, which is
+# what that field holds.
+[project.entry-points."kari.mcp_servers"]
+default = "jgrants_util_mcp_server:main"
+
 [build-system]
 requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"

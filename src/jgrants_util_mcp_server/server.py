@@ -10,6 +10,8 @@ descriptions on the other tools.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import hashlib
 from collections import OrderedDict
 from importlib.metadata import version
 from typing import Annotated, Any
@@ -35,7 +37,13 @@ from .api import (
     UsePurpose,
 )
 from .guideline import GUIDELINE
-from .text import UnsupportedAttachment, attachment_text, html_to_text
+from .text import (
+    AttachmentText,
+    NoTextLayer,
+    UnsupportedAttachment,
+    attachment_text,
+    html_to_text,
+)
 
 SERVER_NAME = "jgrants-util"
 
@@ -50,6 +58,9 @@ MAX_LIMIT = 100
 DEFAULT_ATTACHMENT_CHARS = 6000
 MAX_ATTACHMENT_CHARS = 20000
 ATTACHMENT_TEXT_CACHE_SIZE = 16
+MIN_KEYWORD_CHARS = 2
+DEFAULT_HTTP_HOST = "127.0.0.1"
+DEFAULT_HTTP_PORT = 8000
 
 mcp = MCPServer(
     SERVER_NAME,
@@ -60,7 +71,9 @@ mcp = MCPServer(
 )
 
 _client = JGrantsClient()
-_attachment_texts: OrderedDict[tuple[str, str, int], tuple[str, str]] = OrderedDict()
+# Keyed by the attachment's content, not its position: the detail it comes from
+# expires, and a revised or reordered attachment must not return the old text.
+_attachment_texts: OrderedDict[str, AttachmentText] = OrderedDict()
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 
@@ -87,7 +100,7 @@ async def load_guideline() -> str:
 async def search_subsidies(
     keyword: Annotated[
         str,
-        Field(description="One search term, 2–255 characters, no spaces.", min_length=2, max_length=255),
+        Field(description="One search term, 2–255 characters, no spaces.", max_length=255),
     ],
     target_area_search: Annotated[Area | None, Field(description="Target area.")] = None,
     industry: Annotated[list[Industry] | None, Field(description="Industries, any of.")] = None,
@@ -102,6 +115,8 @@ async def search_subsidies(
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict[str, Any]:
     keyword = keyword.strip()
+    if len(keyword) < MIN_KEYWORD_CHARS:
+        raise ToolError(f"keyword must be at least {MIN_KEYWORD_CHARS} characters.")
     if any(c.isspace() for c in keyword):
         raise ToolError(
             "keyword must be a single term without spaces. Put the area, industry, purpose "
@@ -181,7 +196,8 @@ async def get_subsidy_detail(
 @mcp.tool(
     description=(
         "Read an attachment's text (PDF, page by page) in pieces of max_chars; continue from "
-        "next_offset. Other formats cannot be read here."
+        "next_offset. pages_without_text lists PDF pages that are images only. Other formats "
+        "cannot be read here."
     ),
     annotations=_READ_ONLY,
 )
@@ -192,7 +208,8 @@ async def read_attachment(
     offset: Annotated[int, Field(ge=0, description="Character offset to read from.")] = 0,
     max_chars: Annotated[int, Field(ge=500, le=MAX_ATTACHMENT_CHARS)] = DEFAULT_ATTACHMENT_CHARS,
 ) -> dict[str, Any]:
-    name, text = await _attachment(subsidy_id, kind, index)
+    name, extracted = await _attachment(subsidy_id, kind, index)
+    text = extracted.text
     piece = text[offset : offset + max_chars]
     end = offset + len(piece)
     return {
@@ -200,15 +217,14 @@ async def read_attachment(
         "total_chars": len(text),
         "offset": offset,
         "next_offset": end if end < len(text) else None,
+        "pages_without_text": list(extracted.pages_without_text),
         "text": piece,
     }
 
 
-async def _attachment(subsidy_id: str, kind: str, index: int) -> tuple[str, str]:
-    key = (subsidy_id, kind, index)
-    if key in _attachment_texts:
-        _attachment_texts.move_to_end(key)
-        return _attachment_texts[key]
+async def _attachment(subsidy_id: str, kind: str, index: int) -> tuple[str, AttachmentText]:
+    # Always through the detail, which is cached with an expiry, so the text
+    # follows the attachment as Jグランツ currently has it.
     try:
         detail = await _client.detail(subsidy_id)
     except JGrantsError as error:
@@ -218,15 +234,26 @@ async def _attachment(subsidy_id: str, kind: str, index: int) -> tuple[str, str]
         raise ToolError(f"This subsidy has {len(files)} attachment(s) of kind {kind}.")
     file = files[index]
     name = file.get("name") or f"{kind}-{index}"
+    data = file.get("data") or ""
+    key = hashlib.sha256(f"{name}\0{data}".encode()).hexdigest()
+    if key in _attachment_texts:
+        _attachment_texts.move_to_end(key)
+        return name, _attachment_texts[key]
+    url = detail.get("front_subsidy_detail_page_url") or _portal_url(subsidy_id)
     try:
-        text = attachment_text(name, file.get("data") or "")
+        # pypdf is synchronous and slow on large PDFs; off the event loop, other
+        # requests and cancellation keep being served while it runs.
+        extracted = await asyncio.to_thread(attachment_text, name, data)
+    except NoTextLayer as error:
+        raise ToolError(
+            f"{name} has no text layer — it is a scanned image and needs OCR; open it from {url}."
+        ) from error
     except UnsupportedAttachment as error:
-        url = detail.get("front_subsidy_detail_page_url") or _portal_url(subsidy_id)
         raise ToolError(f"{name} is not a PDF or text file; open it from {url}.") from error
-    _attachment_texts[key] = (name, text)
+    _attachment_texts[key] = extracted
     while len(_attachment_texts) > ATTACHMENT_TEXT_CACHE_SIZE:
         _attachment_texts.popitem(last=False)
-    return name, text
+    return name, extracted
 
 
 def _summary(item: dict[str, Any]) -> dict[str, Any]:
@@ -253,19 +280,36 @@ def _size(file: dict[str, Any]) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Jグランツ skill-style MCP server")
-    parser.add_argument("--transport", choices=["streamable-http", "stdio"], default="streamable-http")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    # stdio by default: a client that installed this package starts the process
+    # itself and talks to it over the pipe, which needs no port, no host name and
+    # no reverse proxy. Serving it over HTTP is the deliberate case, so it is the
+    # one that says so.
+    parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
+    # The HTTP options default to None so that giving one with stdio can be
+    # caught: it would otherwise be ignored without a word.
+    parser.add_argument("--host", help=f"HTTP only. Default {DEFAULT_HTTP_HOST}.")
+    parser.add_argument("--port", type=int, help=f"HTTP only. Default {DEFAULT_HTTP_PORT}.")
     parser.add_argument(
         "--allowed-host",
         action="append",
-        default=[],
         metavar="HOST[:PORT]",
-        help="Host header to accept, e.g. demo.mcp.gotoai.com behind a reverse proxy. Repeatable.",
+        help="HTTP only. Host header to accept, e.g. demo.mcp.gotoai.com behind a reverse "
+        "proxy. Repeatable.",
     )
     args = parser.parse_args()
 
     if args.transport == "stdio":
+        given = [
+            flag
+            for flag, value in (
+                ("--host", args.host),
+                ("--port", args.port),
+                ("--allowed-host", args.allowed_host),
+            )
+            if value is not None
+        ]
+        if given:
+            parser.error(f"{', '.join(given)} need --transport streamable-http")
         mcp.run("stdio")
         return
 
@@ -278,8 +322,8 @@ def main() -> None:
         )
     mcp.run(
         "streamable-http",
-        host=args.host,
-        port=args.port,
+        host=args.host or DEFAULT_HTTP_HOST,
+        port=args.port if args.port is not None else DEFAULT_HTTP_PORT,
         transport_security=security,
     )
 
